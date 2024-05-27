@@ -1,0 +1,31 @@
+stages:
+- stage: DAST_Passive_Baseline_Ecomm
+  displayName: "DAST - Passive and Baseline Scans for E-commerce QA"
+  jobs:
+  - job: OWASP_ZAP_Scans_Ecomm
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - checkout: self
+    - script: |
+        echo "Starting ZAP in Daemon Mode for Passive Scan..."
+        docker run -u zap -p 8090:8090 -d owasp/zap2docker-stable zap.sh -daemon -port 8090 -host 0.0.0.0 -config api.disablekey=true
+        sleep 10  # Allow ZAP to start
+      displayName: "Start ZAP Daemon"
+
+    - script: |
+        echo "Configuring ZAP for Passive Scan..."
+        curl http://localhost:8090/JSON/pscan/action/enableAllScanners
+      displayName: "Enable All Passive Scanners"
+
+    - script: |
+        echo "Running ZAP Baseline Scan against the E-commerce QA environment..."
+        docker exec zap zap-baseline.py -t https://qa_ecomm_mda.ae -g gen.conf -r zap-baseline-report-ecommerce.html
+        docker cp zap:/zap/zap-baseline-report-ecommerce.html $(Build.ArtifactStagingDirectory)/zap-baseline-report-ecommerce.html
+      displayName: "Run ZAP Baseline Scan for E-commerce"
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        pathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        artifactName: 'ZAP_Reports_Ecommerce'
+      displayName: "Publish ZAP Reports for E-commerce"

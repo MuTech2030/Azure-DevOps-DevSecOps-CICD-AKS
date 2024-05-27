@@ -1,0 +1,187 @@
+name: 'Ecom-MDA-Continuous-Intigrations(CI)-$(Build.BuildId)'
+
+trigger:
+  branches:
+    include:
+    - develop 
+    - main   
+    - release/* 
+    - hotfix/*  
+
+pr:
+  branches:
+    include:
+    - develop  
+    - release/*  
+    - hotfix/*  
+
+pr:
+- dev
+
+pool:
+  vmImage: 'MDA-Ado-DevOps-AKS-Build-Runners'
+
+schedules:
+  - cron: "0 12 * * 0"
+    displayName: Weekly Sunday build
+    always: true
+    branches:
+      include:
+      - main
+
+variables:
+- template: vars/global.yaml
+- template: vars/develop.yaml
+
+stages:
+# Required Tools are already installed by the Self Hosted AKS Runners [ default-JDK, node.js & Mven, npm, ..... ]
+
+stages:
+  # Installing Dependencies with Caching
+- stage: InstallingDependenciesAndCaching
+  displayName: 'Installing Dependencies And Caching'
+  jobs:
+    - job: InstallingDependenciesOrUsingCaching
+      displayName: 'Installing Dependencies Or Using Caching'
+      steps:
+        - checkout: self
+        # Setting up the path to the PVC
+        - script: |
+            echo "Setting up cache directory using PVC..."
+            CACHE_DIR=/mnt/azure-cache  # This path should match the mounted PVC path
+            echo "Cache directory set to: $CACHE_DIR"
+            echo "##vso[task.setvariable variable=cacheDir]$CACHE_DIR"
+          displayName: 'Setup Cache Directory'
+        # Using the cache directory to cache npm packages
+        - script: |
+            echo "Determining npm cache directory..."
+            npm_cache_dir=$(npm config get cache)
+            echo "NPM cache directory: $npm_cache_dir"
+            echo "##vso[task.setvariable variable=npmCacheDir]$npm_cache_dir"
+
+            CACHE_KEY="$(uname -s)-node-$(md5sum package-lock.json | awk '{ print $1 }')"
+            CACHE_FOLDER=$CACHE_DIR/$CACHE_KEY
+            if [ -d "$CACHE_FOLDER" ]; then
+              echo "Cache hit - Restoring cache"
+              cp -R $CACHE_FOLDER/* $npm_cache_dir
+            else
+              echo "Cache miss - Installing dependencies"
+              npm install
+              mkdir -p $CACHE_FOLDER
+              cp -R $npm_cache_dir/* $CACHE_FOLDER
+            fi
+          displayName: 'Restore or Cache npm packages'
+
+# Execute Tests
+- stage: ExecuteTests
+  displayName: 'Execute Tests'
+  jobs:
+    - job: ExecuteUnitTests
+      displayName: 'Execute Unit Tests'
+      steps:
+        - checkout: self
+        - script: |
+            npm test
+#            mvn test
+          displayName: 'Run Automated Tests for Node.js '
+
+# SCA Security Scans
+- stage: SCASecurityScans
+  displayName: 'SCA Security Scans'
+  jobs:
+    - job: ExecuteSCASecurityScan
+      displayName: 'Execute SCA Security Scan'
+      steps:
+        - script: |
+            trivy filesystem --exit-code 1 --no-progress /path/to/project
+          displayName: 'Trivy Security Scan of Project Directory'
+
+# SAST Code Quality Analysis
+- stage: CodeQualityAnalysis
+  displayName: 'Code Quality Analysis'
+  jobs:
+    - job: SASTCodeQuality
+      displayName: 'SAST Code Quality Evaluation'
+      steps:
+        - script: |
+            sonar-scanner
+          displayName: 'SonarQube Analysis'
+
+# Docker Image Building
+- stage: BuildDockerImage
+  displayName: 'Build Docker Image'
+  jobs:
+    - job: DockerImageBuild
+      displayName: 'Docker Image Build'
+      steps:
+        - script: |
+            docker build -t $(dockerRegistry)/$(imageName):$(imageTag) .
+          displayName: 'Build Docker Image'
+
+# Docker Image Security Scan
+- stage: DockerImageSecurityScan
+  displayName: 'Docker Image Security Scan'
+  jobs:
+    - job: DockerSecurityScan
+      displayName: 'Docker Security Scan'
+      steps:
+        - script: |
+            trivy image --exit-code 1 --no-progress $(dockerRegistry)/$(imageName):$(imageTag)
+          displayName: 'Security Scan Docker Image with Trivy'
+
+# Docker Image Push
+- stage: PushDockerImage
+  displayName: 'Push Docker Image'
+  jobs:
+    - job: DockerImagePush
+      displayName: 'Push Docker Image'
+      steps:
+        - script: |
+            docker push $(dockerRegistry)/$(imageName):$(imageTag)
+          displayName: 'Push Docker Image to Registry'
+
+# Additional stages like deployment could be added here
+
+# Deploy
+# ------
+- stage: DeployHelmChart
+  displayName: 'Deploy Helm Chart to Dev AKS'
+  jobs:
+    - deployment: DeployToDevAKS
+      displayName: 'Deploy to Dev AKS'
+      environment: 'ecom-deploy-dev-aks'  # Assuming 'dev-aks' is the name of the environment in Azure DevOps
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - checkout: self
+              - task: AzureCLI@2
+                displayName: 'Login to Azure'
+                inputs:
+                  azureSubscription: 'Azure service connection name'  # Specify the service connection name here
+                  scriptType: 'bash'
+                  scriptLocation: 'inlineScript'
+                  inlineScript: |
+                    az login --identity
+
+              - task: AzureCLI@2
+                displayName: 'Set Kubernetes Context'
+                inputs:
+                  azureSubscription: 'Azure service connection name'
+                  scriptType: 'bash'
+                  scriptLocation: 'inlineScript'
+                  inlineScript: |
+                    az aks get-credentials --name $(clusterName) --resource-group $(resourceGroupName) --overwrite-existing
+
+              - script: |
+                  echo "Deploying Helm Chart..."
+                  helm upgrade --install $(helmReleaseName) ./chart --namespace $(k8sNamespace) \
+                    --set image.repository=$(imageName) \
+                    --set image.tag=$(Build.BuildId) \
+                displayName: 'Deploy Helm Chart'
+
+              - script: |
+                  echo "Kubernetes Logout"
+                  az aks remove-credentials --name $(clusterName) --resource-group $(resourceGroupName)
+                displayName: 'Cleanup Kubernetes Credentials'
+

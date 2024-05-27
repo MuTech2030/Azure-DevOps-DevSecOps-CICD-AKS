@@ -1,0 +1,30 @@
+stages:
+- stage: DAST
+  displayName: "Dynamic Application Security Testing"
+  jobs:
+  - job: RunDAST
+    displayName: "Run OWASP ZAP Scan"
+    pool:
+      vmImage: 'ubuntu-latest'  # Ensure Docker is available on the agent
+    steps:
+    - script: |
+        echo "Starting vulnerable Flask application..."
+        docker run -d -p 5050:5050 we45/vul_flask
+      displayName: "Start Vulnerable Flask App"
+
+    - script: |
+        echo "Waiting for the application to initialize..."
+        sleep 20
+      displayName: "Wait for App Initialization"
+
+    - script: |
+        echo "Running OWASP ZAP Scan..."
+        docker run --user 0 -v $(Build.SourcesDirectory):/zap/wrk/:rw -t owasp/zap2docker-stable zap-baseline.py -t http://$(curl -XGET -s http://checkip.amazonaws.com/):5050/ -r baseline_report.html || true
+        docker cp zap:/zap/wrk/baseline_report.html $(Build.ArtifactStagingDirectory)/baseline_report.html
+      displayName: "Execute OWASP ZAP Security Scan"
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        pathtoPublish: '$(Build.ArtifactStagingDirectory)/baseline_report.html'
+        artifactName: 'ZAP_Report'
+      displayName: "Publish ZAP Report"

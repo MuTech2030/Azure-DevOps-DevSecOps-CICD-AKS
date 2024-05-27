@@ -1,0 +1,68 @@
+trigger: none
+
+resources:
+  repositories:
+  - repository: self
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  acrRegistry: 'cloudkubereviews'
+  imageName: 'cloudkubereviews.azurecr.io/frontend'
+
+jobs:
+- job: BuildAndPush
+  condition: eq(variables['Build.SourceBranchName'], 'dev')
+  steps:
+  - checkout: self
+  - task: AzureCLI@2
+    displayName: 'Azure Login and ACR Login'
+    inputs:
+      azureSubscription: 'Azure service connection name'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az login --service-principal -u $(AZURE_CLIENT_ID) -p $(AZURE_CLIENT_SECRET) --tenant $(AZURE_TENANT_ID)
+        az acr login --name $(acrRegistry)
+
+  - script: |
+      docker build -t $(imageName):$(imageTag) .
+      docker push $(imageName):$(imageTag)
+    displayName: 'Build and Push Docker Image'
+
+  - task: AzureCLI@2
+    displayName: 'Run Snyk Vulnerability Scan'
+    inputs:
+      azureSubscription: 'Azure service connection name'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        snyk test --docker $(imageName):$(imageTag) --file=Dockerfile
+
+  - script: |
+      docker logout
+    displayName: 'Docker Logout'
+
+- job: PromoteToStaging
+  condition: eq(variables['Build.SourceBranchName'], 'staging')
+  steps:
+  - task: AzureCLI@2
+    displayName: 'Azure Login and ACR Login'
+    inputs:
+      azureSubscription: 'Azure service connection name'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az login --service-principal -u $(AZURE_CLIENT_ID) -p $(AZURE_CLIENT_SECRET) --tenant $(AZURE_TENANT_ID)
+        az acr login --name $(acrRegistry)
+
+  - script: |
+      docker pull $(imageName):dev-$(gitSha)
+      docker tag $(imageName):dev-$(gitSha) $(imageName):$(imageTag)
+      docker push $(imageName):$(imageTag)
+    displayName: 'Promote Docker Image to Staging'
+
+  - script: |
+      docker logout
+    displayName: 'Docker Logout'

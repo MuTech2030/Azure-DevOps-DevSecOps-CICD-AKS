@@ -1,0 +1,30 @@
+pool: Default
+jobs:
+- job: start_app
+  steps:
+  - script: start-wecare
+      
+- job: start_zap_scan
+  dependsOn: start_app
+  steps:
+  - script: export TARGET_IP=$(curl -XGET -s http://checkip.amazonaws.com/) && python3 -u Walkthrough.py
+  - task: CopyFiles@2
+    inputs:
+      sourceFolder: '$(Build.SourcesDirectory)'
+      contents: '*.json'
+      targetFolder: $(Build.ArtifactStagingDirectory)
+  - task: PublishBuildArtifacts@1
+    inputs:
+      pathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      artifactName: zap_results
+      
+- job: stop_app
+  dependsOn: start_zap_scan
+  steps:
+  - script: clean-docker || true
+  
+  
+
+docker run -d -p 5050:5050 we45/vul_flask
+#------------
+docker run --user 0 -v $(pwd):/zap/wrk/:rw owasp/zap2/zap2docker-stable zap-baseline.py -t http://$(curl -XGET -s http://checkip.amazonaws.com/):5050/ -r baseline_report.html || true

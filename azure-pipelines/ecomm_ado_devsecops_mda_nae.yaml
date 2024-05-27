@@ -1,0 +1,76 @@
+name: 'Ecom-MDA-Continuous-Delivery(CD)-$(Build.BuildId)'
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - prod
+    - staging
+    - qa 
+
+  paths:
+    exclude:
+    - '.*'
+    - 'README.md'
+    - 'docs/*'
+    - 'Makefile'
+
+pool:
+  vmImage: 'MDA-Release-AKS-Runners'
+
+
+variables:
+- template: vars/global.yaml
+- template: vars/prod.yaml
+- template: vars/stage.yaml
+- template: vars/qa.yaml
+# variables:
+#  - group: mda-devops-cd --> this is in case you are using keys in the values and not just a bunch of service connnections
+
+:
+## Deployment by branch mereg
+
+stages:
+  - template: config.yaml  # Path to configuration template
+  
+  - stage: DebugOutputs
+    dependsOn: Config
+    jobs:
+    - job: DebugContext
+      steps:
+      - script: |
+          echo "### Triggering Event"
+          echo "| Var | Value |"
+          echo "|:--|:--|"
+          echo "| event_name      | $(Build.Reason) |"
+          echo "| ref_name        | $(Build.SourceBranchName) |"
+          echo "| event.ref       | $(Build.SourceBranch) |"
+          echo "| event.ref_type  | $(Build.SourceBranch) |"
+        displayName: 'Display Debug Information'
+
+  - template: docker.yaml  # Path to Docker workflow template
+
+  - template: deploy.yaml  # Path to Deploy workflow template
+
+  - stage: E2E
+    condition: or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.SourceBranch'], 'refs/heads/staging'))
+    dependsOn:
+    - Config
+    - Docker
+    - Deploy
+    template: e2e.yaml  # Path to E2E testing template
+
+
+
+
+
+
+
+
+
+
+
+    # Bash script to trigger another Azure DevOps Pipeline
+# echo "Triggering CI pipeline..."
+# az devops login --organization https://dev.azure.com/yourOrg --token yourPAT
+# az pipelines run --name "CI-Pipeline-Name" --branch "main" --project yourProject
